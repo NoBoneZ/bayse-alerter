@@ -1,0 +1,40 @@
+# Environment / secrets — NEVER commit the real .env (it holds your pk_live key).
+# Only .env.example is tracked.
+.env
+.env.*
+!.env.example
+
+# Compiled binaries and build output
+/alerter
+/bin/
+/dist/
+*.exe
+*.out
+
+# Go test / coverage artifacts
+*.test
+coverage.out
+coverage.html
+*.prof
+
+# Go workspace file (machine-specific)
+go.work
+go.work.sum
+
+# Dependency vendoring (not used here; uncomment if you vendor)
+# /vendor/
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Docker / local data
+/data/
+*.pgdata

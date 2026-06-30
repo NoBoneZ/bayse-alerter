@@ -1,0 +1,4 @@
+DROP INDEX IF EXISTS idx_rules_enabled;
+DROP TABLE IF EXISTS alerts;
+DROP TABLE IF EXISTS rule_state;
+DROP TABLE IF EXISTS rules;

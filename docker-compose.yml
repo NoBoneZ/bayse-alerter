@@ -1,0 +1,26 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: bayse
+      POSTGRES_PASSWORD: bayse
+      POSTGRES_DB: bayse
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bayse"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  alerter:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://bayse:bayse@db:5432/bayse?sslmode=disable
+      BAYSE_PUBLIC_KEY: ${BAYSE_PUBLIC_KEY}   # from your shell / .env, never committed
+      BAYSE_BASE_URL: https://api.bayse.markets
+      POLL_INTERVAL: 10s
+      HTTP_ADDR: ":8080"
+    ports: ["8080:8080"]
