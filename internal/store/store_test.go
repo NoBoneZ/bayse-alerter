@@ -35,7 +35,7 @@ func testStore(t *testing.T) *Store {
 
 func sampleRule() rules.Rule {
 	return rules.Rule{
-		EventSlug: "e", EventID: "ev", MarketID: "m", Outcome: "YES",
+		EventSlug: "e", EventID: "ev", MarketID: "m", Outcome: "YES", OutcomeSide: "YES",
 		Type:    rules.Threshold,
 		Params:  rules.Params{Direction: rules.Above, Target: 60},
 		Enabled: true,

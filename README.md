@@ -31,28 +31,58 @@ copies of the service run at the same time.
 
 ---
 
-## Running it
+## Running it with Docker
 
-You need Docker, and a Bayse **public** key (the `pk_live_...` one). Read
+This is the one-command path, and the way I'd suggest running it. You need Docker
+with the Compose plugin, and a Bayse **public** key (the `pk_live_...` one). Read
 endpoints only need the public key, so a standard account works — no funded
 balance or write access required. Create a key from the Bayse web app under
 Account Settings, API Keys.
 
-The whole thing comes up with one command:
+First, copy the example environment file and paste your key into it. Compose
+reads `.env` automatically, so this is all the configuration you need:
 
 ```bash
-BAYSE_PUBLIC_KEY=pk_live_yourkey docker compose up --build
+cp .env.example .env      # then open .env and paste your real key
 ```
 
-That builds the binary, starts Postgres, waits for it to be healthy, runs the
-schema migrations automatically on startup, and then starts the polling loop and
-the HTTP API together. The API listens on `:8080` by default.
+Then bring the whole stack up in the background:
 
-To check it's alive:
+```bash
+docker compose up -d
+```
+
+That single command builds the alerter image, starts Postgres and waits for its
+health check to pass, applies the schema migrations on startup, and then runs the
+polling loop and the HTTP API side by side. The API listens on `:8080`. The image
+is built automatically the first time, so you don't need `--build` for the
+initial run — add it only when you've changed the code and want a fresh rebuild:
+
+```bash
+docker compose up -d --build
+```
+
+Once it's up, check it's alive:
 
 ```bash
 curl localhost:8080/healthz
 # {"status":"ok"}
+```
+
+Because it's running detached, follow the logs in a separate terminal. They're
+structured JSON, so you can watch rules fire in real time — lines like `alert
+fired` when a condition trips, and `rule disabled: market resolved` when the loop
+retires a settled market:
+
+```bash
+docker compose logs -f alerter
+```
+
+When you're done, tear it down. Add `-v` to also wipe the Postgres volume for a
+genuinely clean slate next time:
+
+```bash
+docker compose down -v
 ```
 
 ### Configuration
@@ -310,8 +340,8 @@ The packages are split so that the part that actually matters — the firing log
 - `internal/poller` — the loop. It loads enabled rules, fetches prices, calls the
   pure engine, and persists whatever transition the engine decides. It contains
   no decision logic itself; it's pure orchestration.
-- `internal/api` — the HTTP layer. One real endpoint (`POST /rules`) plus a
-  health check.
+- `internal/api` — the HTTP layer. Rule creation (`POST /rules`), two read-only
+  endpoints for inspecting rules and alerts, and a health check.
 - `internal/config` — environment to typed config.
 - `cmd/alerter` — wires it all together and handles graceful shutdown.
 
@@ -355,6 +385,12 @@ row exists. It's skipped unless you point it at a database:
 TEST_DATABASE_URL=postgres://bayse:bayse@localhost:5432/bayse?sslmode=disable \
   go test ./internal/store/
 ```
+
+One caution: these tests `TRUNCATE` the tables on each run to start from a clean
+slate, so point `TEST_DATABASE_URL` at a throwaway database, not one holding data
+you care about. The Compose Postgres is a convenient target — `docker compose up
+-d db` starts just the database, and the DSN above matches its default
+credentials.
 
 ---
 
