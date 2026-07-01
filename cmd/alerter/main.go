@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"github.com/NoBoneZ/bayse-alerter/internal/store"
+	"github.com/joho/godotenv"
 	"log/slog"
 	"net/http"
 	"os"
@@ -17,8 +18,6 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	// NOTE: replace this module path with the one in YOUR go.mod
-	// (e.g. github.com/<your-username>/bayse-alerter).
 	"github.com/NoBoneZ/bayse-alerter/internal/api"
 	"github.com/NoBoneZ/bayse-alerter/internal/bayse"
 	"github.com/NoBoneZ/bayse-alerter/internal/config"
@@ -26,9 +25,9 @@ import (
 )
 
 func main() {
-	// A structured JSON logger, used everywhere. slog is standard library.
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	_ = godotenv.Load()
 
+	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if err := run(log); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
