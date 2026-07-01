@@ -20,7 +20,6 @@ services:
     environment:
       DATABASE_URL: postgres://bayse:bayse@db:5432/bayse?sslmode=disable
       BAYSE_PUBLIC_KEY: ${BAYSE_PUBLIC_KEY}   # from your shell / .env, never committed
-      BAYSE_BASE_URL: https://api.bayse.markets
       POLL_INTERVAL: 10s
       HTTP_ADDR: ":8080"
     ports: ["8080:8080"]

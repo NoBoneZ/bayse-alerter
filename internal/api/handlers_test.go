@@ -12,19 +12,18 @@ import (
 
 	"github.com/google/uuid"
 
-	// NOTE: replace this module path with the one in YOUR go.mod.
 	"github.com/NoBoneZ/bayse-alerter/internal/bayse"
 	"github.com/NoBoneZ/bayse-alerter/internal/rules"
+	"github.com/NoBoneZ/bayse-alerter/internal/store"
 )
 
-// --- fakes -----------------------------------------------------------------
-
-// fakeStore implements RuleStore. It records what it was asked to create and can
-// be told to fail, so we can exercise both the happy path and the 500 path.
 type fakeStore struct {
 	created   []rules.Rule
 	createErr error
 	pingErr   error
+	listRules []store.RuleWithState
+	listAlrts []store.Alert
+	listErr   error
 }
 
 func (f *fakeStore) CreateRules(_ context.Context, rs []rules.Rule) ([]uuid.UUID, error) {
@@ -39,10 +38,22 @@ func (f *fakeStore) CreateRules(_ context.Context, rs []rules.Rule) ([]uuid.UUID
 	return ids, nil
 }
 
+func (f *fakeStore) ListRules(context.Context) ([]store.RuleWithState, error) {
+	return f.listRules, f.listErr
+}
+
+func (f *fakeStore) ListAlerts(_ context.Context, limit int) ([]store.Alert, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	if limit < len(f.listAlrts) {
+		return f.listAlrts[:limit], nil
+	}
+	return f.listAlrts, nil
+}
+
 func (f *fakeStore) Ping(context.Context) error { return f.pingErr }
 
-// fakeResolver implements EventResolver. It returns a canned event, or a chosen
-// error (e.g. bayse.ErrNotFound), without touching the network.
 type fakeResolver struct {
 	event bayse.Event
 	err   error
@@ -52,7 +63,6 @@ func (f *fakeResolver) GetEventBySlug(context.Context, string) (bayse.Event, err
 	return f.event, f.err
 }
 
-// sampleEvent is a minimal valid event: one market with YES/NO outcomes.
 func sampleEvent() bayse.Event {
 	return bayse.Event{
 		ID:   "ev1",
@@ -67,13 +77,11 @@ func sampleEvent() bayse.Event {
 	}
 }
 
-// newTestServer wires a Server with the given fakes and returns it.
 func newTestServer(store RuleStore, resolver EventResolver) *Server {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return NewServer(store, resolver, log)
 }
 
-// do sends a POST /rules with the given JSON body and returns the recorder.
 func do(t *testing.T, srv *Server, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/rules", bytes.NewBufferString(body))
@@ -82,8 +90,6 @@ func do(t *testing.T, srv *Server, body string) *httptest.ResponseRecorder {
 	srv.Routes().ServeHTTP(rec, req)
 	return rec
 }
-
-// --- tests -----------------------------------------------------------------
 
 func TestCreateRules_Success(t *testing.T) {
 	store := &fakeStore{}
@@ -107,7 +113,6 @@ func TestCreateRules_Success(t *testing.T) {
 		t.Fatalf("got %d rule ids, want 1", len(resp.RuleIDs))
 	}
 
-	// The rule reached the store, stamped with the event id and ARMED-by-default fields.
 	if len(store.created) != 1 {
 		t.Fatalf("store received %d rules, want 1", len(store.created))
 	}
@@ -167,7 +172,6 @@ func TestCreateRules_UnknownOutcome(t *testing.T) {
 
 func TestCreateRules_InvalidParams(t *testing.T) {
 	srv := newTestServer(&fakeStore{}, &fakeResolver{event: sampleEvent()})
-	// threshold rule missing a direction -> params validation fails -> 400
 	rec := do(t, srv, `{"event_slug":"my-slug","rules":[
 		{"market_id":"m1","outcome":"YES","type":"threshold_cross",
 		 "params":{"target":60}}]}`)
@@ -203,7 +207,6 @@ func TestHealth(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 
-	// And a 503 when the database is unreachable.
 	down := newTestServer(&fakeStore{pingErr: io.ErrClosedPipe}, &fakeResolver{})
 	rec2 := httptest.NewRecorder()
 	down.Routes().ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -214,11 +217,70 @@ func TestHealth(t *testing.T) {
 
 func TestCreateRules_WrongMethod(t *testing.T) {
 	srv := newTestServer(&fakeStore{}, &fakeResolver{event: sampleEvent()})
-	req := httptest.NewRequest(http.MethodGet, "/rules", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/rules", nil)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	// Go 1.22 method routing returns 405 for the wrong verb on a known path.
+
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rec.Code)
+	}
+}
+
+func TestListRules(t *testing.T) {
+	st := &fakeStore{listRules: []store.RuleWithState{{
+		Rule: rules.Rule{
+			ID: uuid.New(), EventSlug: "my-slug", MarketID: "m1", Outcome: "YES",
+			Type: rules.Threshold, Params: rules.Params{Direction: rules.Above, Target: 60},
+			Enabled: true,
+		},
+		State: rules.State{Phase: rules.Armed},
+	}}}
+	srv := newTestServer(st, &fakeResolver{})
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/rules", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body struct {
+		Rules []ruleView `json:"rules"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Rules) != 1 || body.Rules[0].Phase != "ARMED" || body.Rules[0].LastFiredAt != nil {
+		t.Fatalf("unexpected rules payload: %+v", body.Rules)
+	}
+}
+
+func TestListAlerts_RespectsLimit(t *testing.T) {
+	st := &fakeStore{listAlrts: []store.Alert{
+		{ID: uuid.New(), RuleID: uuid.New(), FireSeq: 1},
+		{ID: uuid.New(), RuleID: uuid.New(), FireSeq: 2},
+	}}
+	srv := newTestServer(st, &fakeResolver{})
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/alerts?limit=1", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body struct {
+		Alerts []alertView `json:"alerts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Alerts) != 1 {
+		t.Fatalf("got %d alerts, want 1 (limit honored)", len(body.Alerts))
+	}
+}
+
+func TestListAlerts_BadLimit(t *testing.T) {
+	srv := newTestServer(&fakeStore{}, &fakeResolver{})
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/alerts?limit=nope", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }

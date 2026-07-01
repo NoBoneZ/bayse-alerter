@@ -26,6 +26,8 @@ copies of the service run at the same time.
 - Fires each rule exactly once on the transition into the triggered state, then
   re-arms when the condition clears so the next crossing can fire again.
 - Writes every firing to an `alerts` table without duplicates.
+- Retires a rule automatically once its market resolves, so the loop stops
+  polling markets that will never trade again.
 
 ---
 
@@ -75,6 +77,23 @@ keep it out of anywhere it might get committed or shared.
 
 ---
 
+## API reference
+
+The service exposes a small HTTP surface: one endpoint to create rules and two
+read-only endpoints to inspect what it has stored and fired.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/rules` | Register one or more rules against an event slug. |
+| `GET` | `/rules` | List every rule with its current phase (armed/triggered). |
+| `GET` | `/alerts` | List recent firings, newest first. Takes `?limit=` (default 100, max 1000). |
+| `GET` | `/healthz` | Liveness plus a database ping. |
+
+A full, runnable Postman collection with example requests and responses lives
+here:
+
+https://documenter.getpostman.com/view/26527466/2sBY4HSNbA
+
 ## Creating rules
 
 Rules are created by POSTing an event slug and a list of rules. The service
@@ -111,6 +130,21 @@ On success you get back the IDs of the rules that were created:
 { "rule_ids": ["7c9e6679-7425-40de-944b-e07fc1f90ae7", "..."] }
 ```
 
+### Choosing the outcome
+
+Every rule targets one outcome of a market. Bayse markets are binary, and each
+has two outcomes with display labels that vary from market to market — a BTC
+market might label them `Up` and `Down` rather than `YES` and `NO`. You can name
+the outcome either way:
+
+- by its display label, exactly as the market lists it (`"Up"`, `"Down"`), or
+- by the canonical side, `"YES"` for the first outcome or `"NO"` for the second.
+
+Internally the service always talks to Bayse using the canonical side, because
+the ticker and price-history endpoints only understand `YES`/`NO`; the display
+label is kept for the stored rule and the alert row. If you name an outcome the
+market doesn't have, creation fails with a 422 that lists the valid labels.
+
 ### Parameter reference
 
 Prices are handled internally as integer cents, so `target` is given in cents
@@ -142,6 +176,67 @@ The status codes try to tell you *what kind* of mistake happened:
 - `422` — the request was well-formed, but you named a market or outcome that
   isn't part of that event.
 - `502` — Bayse itself couldn't be reached to validate the slug.
+
+---
+
+## Inspecting rules and alerts
+
+Two read-only endpoints let you watch the service work without opening a psql
+session.
+
+`GET /rules` returns every rule the service knows about, each with the phase it
+is currently in, so you can see at a glance which rules are armed and which have
+already tripped:
+
+```bash
+curl -s localhost:8080/rules | jq
+```
+
+```json
+{
+  "rules": [
+    {
+      "id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "event_slug": "crypto-btc-1h-feb-24-11am",
+      "market_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "outcome": "YES",
+      "type": "threshold_cross",
+      "params": { "direction": "above", "target": 60 },
+      "enabled": true,
+      "phase": "ARMED",
+      "created_at": "2026-02-17T12:00:00Z"
+    }
+  ]
+}
+```
+
+`GET /alerts` returns the firings themselves, newest first. The `limit` query
+parameter caps the page and defaults to 100:
+
+```bash
+curl -s 'localhost:8080/alerts?limit=20' | jq
+```
+
+```json
+{
+  "alerts": [
+    {
+      "id": "b1f2...",
+      "rule_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "fire_seq": 1,
+      "market_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "outcome": "YES",
+      "observed_price": 61,
+      "triggered_value": 60,
+      "triggered_at": "2026-02-17T12:03:10Z"
+    }
+  ]
+}
+```
+
+Prices come back in the same integer cents the rules are written in, and
+`fire_seq` is the per-rule counter that backs the once-only guarantee described
+below, so a rule that has fired twice will show alerts with `fire_seq` 1 and 2.
 
 ---
 
@@ -333,10 +428,6 @@ call per percent rule per poll at the same time.
 
 After that, in rough priority order:
 
-- Auto-disable rules whose market has resolved or closed, so the loop stops
-  polling dead markets and wasting API calls.
-- A `GET /alerts` (and `GET /rules`) endpoint, so the service can be observed
-  end to end without reaching into the database.
 - Idempotency on rule creation, so a retried POST doesn't create duplicate rules.
 - Authentication on the management endpoint.
 - Metrics and structured visibility into fire counts, poll latency, and upstream

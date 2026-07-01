@@ -57,6 +57,28 @@ func (c *Client) GetEventBySlug(ctx context.Context, slug string) (Event, error)
 	return ev, err
 }
 
+func (c *Client) GetEvent(ctx context.Context, eventID string) (Event, error) {
+	var ev Event
+	q := url.Values{"currency": {"USD"}}
+	err := c.get(ctx, "/events/"+url.PathEscape(eventID), q, &ev)
+	return ev, err
+}
+
+// MarketResolved reports whether a market has reached a terminal state. A market
+// that has left the event entirely is treated as resolved. It is used by the
+// poller to retire rules whose market will never trade again.
+func (c *Client) MarketResolved(ctx context.Context, eventID, marketID string) (bool, error) {
+	ev, err := c.GetEvent(ctx, eventID)
+	if err != nil {
+		return false, err
+	}
+	m, ok := ev.Market(marketID)
+	if !ok {
+		return true, nil
+	}
+	return m.IsResolved(), nil
+}
+
 func (c *Client) Ticker(ctx context.Context, marketID, outcome string) (Ticker, error) {
 	var t Ticker
 	q := url.Values{"outcome": {outcome}}

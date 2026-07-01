@@ -38,3 +38,6 @@ Thumbs.db
 # Docker / local data
 /data/
 *.pgdata
+
+# Air live-reload build output
+/tmp/

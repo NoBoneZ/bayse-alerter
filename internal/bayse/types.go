@@ -2,6 +2,7 @@ package bayse
 
 import (
 	"math"
+	"strings"
 	"time"
 )
 
@@ -77,6 +78,34 @@ func (m Market) OutcomeID(label string) (string, bool) {
 func (m Market) HasOutcome(label string) bool {
 	_, ok := m.OutcomeID(label)
 	return ok
+}
+
+// IsResolved reports whether the market has reached a terminal state and will
+// never trade again. Such markets have no order book, so the poller disables
+// rules on them instead of polling them forever.
+func (m Market) IsResolved() bool {
+	switch strings.ToLower(m.Status) {
+	case "resolved", "closed", "settled", "cancelled", "canceled", "expired":
+		return true
+	default:
+		return false
+	}
+}
+
+// ResolveOutcome maps a caller-supplied outcome to this market's display label
+// and its canonical side (YES = outcome1, NO = outcome2). It accepts either the
+// market's own label (e.g. "Up") or the canonical "YES"/"NO", so a rule can be
+// written in whichever form the caller finds natural. The Bayse ticker and
+// price-history endpoints only understand the canonical side.
+func (m Market) ResolveOutcome(input string) (label, side string, ok bool) {
+	switch {
+	case input == m.Outcome1Label || strings.EqualFold(input, "YES"):
+		return m.Outcome1Label, "YES", true
+	case input == m.Outcome2Label || strings.EqualFold(input, "NO"):
+		return m.Outcome2Label, "NO", true
+	default:
+		return "", "", false
+	}
 }
 
 func toCents(price float64) int64 {

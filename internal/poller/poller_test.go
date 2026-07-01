@@ -15,17 +15,13 @@ import (
 	"github.com/NoBoneZ/bayse-alerter/internal/store"
 )
 
-// --- fakes -----------------------------------------------------------------
-
-// fakeStore implements the poller's Store interface. It serves a fixed set of
-// rules and records every FireAlert / Rearm call. FireAlert enforces the same
-// ARMED-only rule the real store does, so the fake can't fire a triggered rule.
 type fakeStore struct {
-	mu     sync.Mutex
-	items  []store.RuleWithState
-	fires  int
-	rearms int
-	phase  rules.Phase // tracks the single rule's phase across calls
+	mu       sync.Mutex
+	items    []store.RuleWithState
+	fires    int
+	rearms   int
+	disabled int
+	phase    rules.Phase
 }
 
 func (f *fakeStore) EnabledRulesWithState(context.Context) ([]store.RuleWithState, error) {
@@ -36,7 +32,7 @@ func (f *fakeStore) FireAlert(_ context.Context, _ rules.Rule, _ rules.Observati
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.phase != rules.Armed {
-		return false, nil // not armed -> no-op, mirrors the real conditional update
+		return false, nil
 	}
 	f.phase = rules.Triggered
 	f.fires++
@@ -51,20 +47,26 @@ func (f *fakeStore) Rearm(_ context.Context, _ uuid.UUID) error {
 	return nil
 }
 
-// fakePrices implements the poller's Prices interface, returning a scripted
-// sequence of prices — one per call — so we can drive a rule across crossings.
+func (f *fakeStore) DisableRule(_ context.Context, _ uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.disabled++
+	return nil
+}
+
 type fakePrices struct {
-	mu     sync.Mutex
-	prices []int64
-	i      int
-	ref    int64
+	mu       sync.Mutex
+	prices   []int64
+	i        int
+	ref      int64
+	resolved bool
 }
 
 func (f *fakePrices) CurrentPrice(context.Context, string, string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.i >= len(f.prices) {
-		return f.prices[len(f.prices)-1], nil // hold last value if over-polled
+		return f.prices[len(f.prices)-1], nil
 	}
 	p := f.prices[f.i]
 	f.i++
@@ -73,6 +75,10 @@ func (f *fakePrices) CurrentPrice(context.Context, string, string) (int64, error
 
 func (f *fakePrices) ReferencePrice(context.Context, string, string, string, time.Duration, time.Time) (int64, error) {
 	return f.ref, nil
+}
+
+func (f *fakePrices) MarketResolved(context.Context, string, string) (bool, error) {
+	return f.resolved, nil
 }
 
 func quietLogger() *slog.Logger {
@@ -92,20 +98,12 @@ func thresholdRule() store.RuleWithState {
 	}
 }
 
-// --- tests -----------------------------------------------------------------
-
-// The headline test, through the orchestration: driving the canonical price
-// sequence one tick at a time, the rule must fire exactly twice — once per
-// crossing — and re-arm once on the dip.
 func TestPoller_FiresOncePerCrossing(t *testing.T) {
 	item := thresholdRule()
 	st := &fakeStore{items: []store.RuleWithState{item}, phase: rules.Armed}
 	prices := &fakePrices{prices: []int64{55, 58, 61, 63, 59, 62}}
-	//                                       -    -    fire -    rearm fire
 	p := New(st, prices, time.Hour, quietLogger())
 
-	// Run one tick per price. We must reload the rule's phase from the fake each
-	// tick, exactly as the real poller reloads state from the database.
 	ctx := context.Background()
 	for range prices.prices {
 		st.items[0].State.Phase = st.phase
@@ -122,11 +120,10 @@ func TestPoller_FiresOncePerCrossing(t *testing.T) {
 	}
 }
 
-// While the condition stays true, the rule must fire once and never again.
 func TestPoller_NoDoubleFireWhileTrue(t *testing.T) {
 	item := thresholdRule()
 	st := &fakeStore{items: []store.RuleWithState{item}, phase: rules.Armed}
-	prices := &fakePrices{prices: []int64{65, 66, 67, 68}} // all above, never dips
+	prices := &fakePrices{prices: []int64{65, 66, 67, 68}}
 	p := New(st, prices, time.Hour, quietLogger())
 
 	ctx := context.Background()
@@ -142,8 +139,6 @@ func TestPoller_NoDoubleFireWhileTrue(t *testing.T) {
 	}
 }
 
-// A failed price fetch must skip the rule for that tick without firing, and must
-// not abort the loop.
 func TestPoller_PriceFetchErrorSkipsWithoutFiring(t *testing.T) {
 	item := thresholdRule()
 	st := &fakeStore{items: []store.RuleWithState{item}, phase: rules.Armed}
@@ -155,6 +150,38 @@ func TestPoller_PriceFetchErrorSkipsWithoutFiring(t *testing.T) {
 	if st.fires != 0 {
 		t.Errorf("fires = %d, want 0 (never evaluate on a failed fetch)", st.fires)
 	}
+	if st.disabled != 0 {
+		t.Errorf("disabled = %d, want 0 (a transient price error must not retire a rule)", st.disabled)
+	}
+}
+
+func TestPoller_DisablesRuleOnResolvedMarket(t *testing.T) {
+	item := thresholdRule()
+	st := &fakeStore{items: []store.RuleWithState{item}, phase: rules.Armed}
+	prices := &resolvedPrices{}
+	p := New(st, prices, time.Hour, quietLogger())
+
+	if err := p.tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if st.disabled != 1 {
+		t.Errorf("disabled = %d, want 1 (resolved market should retire the rule)", st.disabled)
+	}
+	if st.fires != 0 {
+		t.Errorf("fires = %d, want 0", st.fires)
+	}
+}
+
+type resolvedPrices struct{}
+
+func (resolvedPrices) CurrentPrice(context.Context, string, string) (int64, error) {
+	return 0, errors.New("market does not have an active orderbook")
+}
+func (resolvedPrices) ReferencePrice(context.Context, string, string, string, time.Duration, time.Time) (int64, error) {
+	return 0, errors.New("market does not have an active orderbook")
+}
+func (resolvedPrices) MarketResolved(context.Context, string, string) (bool, error) {
+	return true, nil
 }
 
 type erroringPrices struct{}
@@ -164,4 +191,7 @@ func (erroringPrices) CurrentPrice(context.Context, string, string) (int64, erro
 }
 func (erroringPrices) ReferencePrice(context.Context, string, string, string, time.Duration, time.Time) (int64, error) {
 	return 0, errors.New("upstream down")
+}
+func (erroringPrices) MarketResolved(context.Context, string, string) (bool, error) {
+	return false, nil
 }

@@ -52,6 +52,17 @@ func (s *Store) FireAlert(ctx context.Context, r rules.Rule, obs rules.Observati
 	return true, nil
 }
 
+// DisableRule flips a rule's enabled flag off so the poller stops loading it.
+// Used to retire rules whose market has resolved.
+func (s *Store) DisableRule(ctx context.Context, ruleID uuid.UUID) error {
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE rules SET enabled = false WHERE id = $1`, ruleID,
+	); err != nil {
+		return fmt.Errorf("store: disable rule: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) Rearm(ctx context.Context, ruleID uuid.UUID) error {
 	if _, err := s.pool.Exec(ctx, `
 		UPDATE rule_state

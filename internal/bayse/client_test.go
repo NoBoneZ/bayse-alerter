@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-// testClient points a Client at a test server, with a discard logger (so retry
-// warnings don't clutter test output) and a tiny backoff (so retry tests are fast).
 func testClient(t *testing.T, baseURL string, opts ...Option) *Client {
 	t.Helper()
 	base := []Option{
@@ -54,7 +52,6 @@ func TestGetEventBySlug_SetsAuthHeaderAndDecodes(t *testing.T) {
 		t.Fatalf("decoded event = %+v", ev)
 	}
 
-	// Exercise the lookup helpers the API handler depends on.
 	m, ok := ev.Market("m1")
 	if !ok {
 		t.Fatal("Market(m1) not found")
@@ -117,14 +114,14 @@ func TestGet_RetriesTransientThenSucceeds(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if atomic.AddInt32(&calls, 1) < 3 {
-			w.WriteHeader(http.StatusServiceUnavailable) // 503 -> transient
+			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		_, _ = io.WriteString(w, `{"marketId":"m1","outcome":"YES","lastPrice":0.50}`)
 	}))
 	defer srv.Close()
 
-	c := testClient(t, srv.URL) // 3 attempts
+	c := testClient(t, srv.URL)
 	cents, err := c.CurrentPrice(context.Background(), "m1", "YES")
 	if err != nil {
 		t.Fatalf("expected success after retries, got %v", err)
@@ -159,7 +156,7 @@ func TestGet_ExhaustsRetriesOnPersistentTransient(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
-		w.WriteHeader(http.StatusBadGateway) // 502 -> transient, every time
+		w.WriteHeader(http.StatusBadGateway)
 	}))
 	defer srv.Close()
 
@@ -189,12 +186,37 @@ func TestReferencePrice_PicksSampleAtOrBeforeWindowStart(t *testing.T) {
 	c := testClient(t, srv.URL)
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	// window 45m -> target 11:15 -> the latest sample at/before that is 11:00 (0.40 -> 40c).
 	cents, err := c.ReferencePrice(context.Background(), "ev1", "m1", "YES", 45*time.Minute, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cents != 40 {
 		t.Errorf("ReferencePrice = %d cents, want 40", cents)
+	}
+}
+
+func TestResolveOutcome_LabelAndCanonicalSide(t *testing.T) {
+	m := Market{
+		Outcome1ID: "o1", Outcome1Label: "Up",
+		Outcome2ID: "o2", Outcome2Label: "Down",
+	}
+	cases := []struct {
+		input     string
+		wantLabel string
+		wantSide  string
+		wantOK    bool
+	}{
+		{"Up", "Up", "YES", true},
+		{"Down", "Down", "NO", true},
+		{"YES", "Up", "YES", true},
+		{"no", "Down", "NO", true},
+		{"Sideways", "", "", false},
+	}
+	for _, c := range cases {
+		label, side, ok := m.ResolveOutcome(c.input)
+		if ok != c.wantOK || label != c.wantLabel || side != c.wantSide {
+			t.Errorf("ResolveOutcome(%q) = (%q, %q, %v), want (%q, %q, %v)",
+				c.input, label, side, ok, c.wantLabel, c.wantSide, c.wantOK)
+		}
 	}
 }

@@ -32,10 +32,10 @@ func (s *Store) CreateRules(ctx context.Context, rs []rules.Rule) ([]uuid.UUID, 
 
 		var id uuid.UUID
 		err = tx.QueryRow(ctx, `
-			INSERT INTO rules (event_slug, event_id, market_id, outcome, rule_type, params, enabled)
-			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+			INSERT INTO rules (event_slug, event_id, market_id, outcome, outcome_side, rule_type, params, enabled)
+			VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
 			RETURNING id`,
-			r.EventSlug, r.EventID, r.MarketID, r.Outcome, string(r.Type), string(params), r.Enabled,
+			r.EventSlug, r.EventID, r.MarketID, r.Outcome, r.OutcomeSide, string(r.Type), string(params), r.Enabled,
 		).Scan(&id)
 		if err != nil {
 			return nil, fmt.Errorf("store: insert rule: %w", err)
@@ -56,14 +56,25 @@ func (s *Store) CreateRules(ctx context.Context, rs []rules.Rule) ([]uuid.UUID, 
 	return ids, nil
 }
 
+// EnabledRulesWithState returns the rules the poller acts on each tick.
 func (s *Store) EnabledRulesWithState(ctx context.Context) ([]RuleWithState, error) {
+	return s.rulesWhere(ctx, "WHERE r.enabled")
+}
+
+// ListRules returns every rule, enabled or not, newest first. It backs the
+// read-only GET /rules endpoint so the service can be inspected without psql.
+func (s *Store) ListRules(ctx context.Context) ([]RuleWithState, error) {
+	return s.rulesWhere(ctx, "ORDER BY r.created_at DESC")
+}
+
+func (s *Store) rulesWhere(ctx context.Context, clause string) ([]RuleWithState, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT r.id, r.event_slug, r.event_id, r.market_id, r.outcome,
+		SELECT r.id, r.event_slug, r.event_id, r.market_id, r.outcome, r.outcome_side,
 		       r.rule_type, r.params, r.enabled, r.created_at,
 		       st.phase, st.last_fired_at
 		FROM rules r
 		JOIN rule_state st ON st.rule_id = r.id
-		WHERE r.enabled`)
+		`+clause)
 	if err != nil {
 		return nil, fmt.Errorf("store: query rules: %w", err)
 	}
@@ -79,7 +90,7 @@ func (s *Store) EnabledRulesWithState(ctx context.Context) ([]RuleWithState, err
 			lastFired *time.Time
 		)
 		if err := rows.Scan(
-			&r.ID, &r.EventSlug, &r.EventID, &r.MarketID, &r.Outcome,
+			&r.ID, &r.EventSlug, &r.EventID, &r.MarketID, &r.Outcome, &r.OutcomeSide,
 			&ruleType, &params, &r.Enabled, &r.CreatedAt,
 			&phase, &lastFired,
 		); err != nil {

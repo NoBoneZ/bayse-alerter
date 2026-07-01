@@ -1,0 +1,28 @@
+# Keep the build context small and secrets out of image layers.
+
+# Secrets — never let the real .env into the build context.
+.env
+.env.*
+!.env.example
+
+# Version control and IDE noise.
+.git
+.gitignore
+.idea/
+.vscode/
+
+# Air live-reload build output.
+tmp/
+
+# Docs and local tooling not needed to build the binary.
+*.md
+Makefile
+.air.toml
+docker-compose.yml
+Dockerfile
+
+# Test / coverage artifacts.
+*.test
+coverage.out
+coverage.html
+*.prof

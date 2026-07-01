@@ -32,11 +32,14 @@ type Rule struct {
 	EventSlug string
 	EventID   string
 	MarketID  string
-	Outcome   string
-	Type      RuleType
-	Params    Params
-	Enabled   bool
-	CreatedAt time.Time
+	Outcome   string // the market's display label, e.g. "Up" or "YES"
+	// OutcomeSide is the canonical YES/NO the Bayse ticker and price-history
+	// endpoints expect; the display label above can be anything.
+	OutcomeSide string
+	Type        RuleType
+	Params      Params
+	Enabled     bool
+	CreatedAt   time.Time
 }
 
 type Params struct {

@@ -8,18 +8,9 @@ import (
 	"testing"
 	"time"
 
-	// NOTE: replace this module path with the one in YOUR go.mod.
 	"github.com/NoBoneZ/bayse-alerter/internal/rules"
 )
 
-// These are INTEGRATION tests: they need a real Postgres. They are skipped
-// unless TEST_DATABASE_URL is set, e.g.:
-//
-//	TEST_DATABASE_URL=postgres://bayse:bayse@localhost:5432/bayse?sslmode=disable \
-//	    go test ./internal/store/
-//
-// Each test starts from a clean schema (migrate + truncate), so re-runs are
-// deterministic.
 func testStore(t *testing.T) *Store {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
@@ -33,7 +24,7 @@ func testStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-	// Clean slate so tests don't accumulate rows across runs.
+
 	if _, err := st.pool.Exec(context.Background(),
 		`TRUNCATE alerts, rule_state, rules RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
@@ -137,7 +128,6 @@ func TestFireAlert_FiresExactlyOnceUnderConcurrency(t *testing.T) {
 	}
 }
 
-// After a fire, Rearm flips the rule back to ARMED so the next crossing can fire.
 func TestRearm_AllowsNextFire(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
@@ -150,11 +140,11 @@ func TestRearm_AllowsNextFire(t *testing.T) {
 	if ok, err := st.FireAlert(ctx, r, obs, dec); err != nil || !ok {
 		t.Fatalf("first fire: ok=%v err=%v", ok, err)
 	}
-	// A second fire while still TRIGGERED must be a no-op.
+
 	if ok, err := st.FireAlert(ctx, r, obs, dec); err != nil || ok {
 		t.Fatalf("fire while triggered: ok=%v err=%v (want ok=false)", ok, err)
 	}
-	// Re-arm, then a fire should succeed again.
+
 	if err := st.Rearm(ctx, ids[0]); err != nil {
 		t.Fatalf("rearm: %v", err)
 	}

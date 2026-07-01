@@ -2,16 +2,19 @@ package api
 
 import (
 	"context"
-	"github.com/NoBoneZ/bayse-alerter/internal/rules"
 	"log/slog"
 	"net/http"
 
 	"github.com/NoBoneZ/bayse-alerter/internal/bayse"
+	"github.com/NoBoneZ/bayse-alerter/internal/rules"
+	"github.com/NoBoneZ/bayse-alerter/internal/store"
 	"github.com/google/uuid"
 )
 
 type RuleStore interface {
 	CreateRules(ctx context.Context, rs []rules.Rule) ([]uuid.UUID, error)
+	ListRules(ctx context.Context) ([]store.RuleWithState, error)
+	ListAlerts(ctx context.Context, limit int) ([]store.Alert, error)
 	Ping(ctx context.Context) error
 }
 
@@ -32,6 +35,8 @@ func NewServer(store RuleStore, resolver EventResolver, log *slog.Logger) *Serve
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /rules", s.handleCreateRules)
+	mux.HandleFunc("GET /rules", s.handleListRules)
+	mux.HandleFunc("GET /alerts", s.handleListAlerts)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return s.recoverPanics(mux)
 }

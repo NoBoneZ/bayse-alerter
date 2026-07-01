@@ -59,18 +59,20 @@ func (p *Poller) tick(ctx context.Context) error {
 }
 
 func (p *Poller) checkRule(ctx context.Context, it store.RuleWithState) error {
-	price, err := p.prices.CurrentPrice(ctx, it.Rule.MarketID, it.Rule.Outcome)
+	// Bayse identifies an outcome by its canonical side (YES/NO), not the
+	// market's display label, so all price lookups use OutcomeSide.
+	price, err := p.prices.CurrentPrice(ctx, it.Rule.MarketID, it.Rule.OutcomeSide)
 	if err != nil {
-		return err
+		return p.handlePriceError(ctx, it, err)
 	}
 
 	obs := rules.Observation{Price: price, At: p.now()}
 
 	if it.Rule.Type == rules.PercentMove {
 		window := time.Duration(it.Rule.Params.WindowSeconds) * time.Second
-		ref, err := p.prices.ReferencePrice(ctx, it.Rule.EventID, it.Rule.MarketID, it.Rule.Outcome, window, obs.At)
+		ref, err := p.prices.ReferencePrice(ctx, it.Rule.EventID, it.Rule.MarketID, it.Rule.OutcomeSide, window, obs.At)
 		if err != nil {
-			return err
+			return p.handlePriceError(ctx, it, err)
 		}
 		obs.Reference = ref
 	}
@@ -98,5 +100,23 @@ func (p *Poller) checkRule(ctx context.Context, it store.RuleWithState) error {
 		return p.store.Rearm(ctx, it.Rule.ID)
 	}
 
+	return nil
+}
+
+// handlePriceError decides what to do when a price lookup fails. If the market
+// has resolved, the rule is retired so it stops being polled; the returned nil
+// keeps that out of the warning logs. Any other failure (a transient upstream
+// error, or an inconclusive status check) is passed back up to be logged and
+// retried on the next tick.
+func (p *Poller) handlePriceError(ctx context.Context, it store.RuleWithState, priceErr error) error {
+	resolved, err := p.prices.MarketResolved(ctx, it.Rule.EventID, it.Rule.MarketID)
+	if err != nil || !resolved {
+		return priceErr
+	}
+	if err := p.store.DisableRule(ctx, it.Rule.ID); err != nil {
+		return err
+	}
+	p.log.Info("rule disabled: market resolved",
+		"rule_id", it.Rule.ID, "market_id", it.Rule.MarketID, "outcome", it.Rule.Outcome)
 	return nil
 }
